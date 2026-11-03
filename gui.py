@@ -1,17 +1,21 @@
-"""桌面版入口（第 3 阶段做界面，第 4 阶段接入 MCP）。
+"""桌面版入口（第 3 阶段做界面，第 4 阶段接入 MCP，第 5 阶段支持打包）。
 
-用法：python gui.py [工作目录]      不写工作目录就用项目里的 playground
-MCP 服务器在项目根目录的 mcp.json 里配置。
+用法：python gui.py [工作目录]      不写工作目录就用 playground
+平时运行源码时，.env、mcp.json、playground 都在项目文件夹里；
+打包成 .app / .exe 以后，它们放在用户主目录下的 DesktopAgent 文件夹里。
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv, set_key
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QSplitter
+from PySide6.QtWidgets import (QApplication, QFileDialog, QInputDialog, QLineEdit, QMainWindow,
+                               QMessageBox, QSplitter)
 
 from agent import LLMError
 from agent.mcp_client import MCPManager, load_mcp_config
@@ -19,9 +23,42 @@ from desktop.agent_bridge import AgentBridge
 from desktop.chat_panel import ChatPanel
 from desktop.file_panel import FilePanel, proposed_change
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_WORKSPACE = PROJECT_ROOT / "playground"
-MCP_CONFIG = PROJECT_ROOT / "mcp.json"
+
+def app_home() -> Path:
+    """配置和工作目录放在哪。
+
+    打包以后，程序本身在只读的安装包里，不能往里面写文件，也不该把 API Key 打包进去，
+    所以改用用户主目录下的 DesktopAgent 文件夹。sys.frozen 是 PyInstaller 打包后才有的标记。
+    """
+    if getattr(sys, "frozen", False):
+        return Path.home() / "DesktopAgent"
+    return Path(__file__).resolve().parent
+
+
+APP_HOME = app_home()
+DEFAULT_WORKSPACE = APP_HOME / "playground"
+MCP_CONFIG = APP_HOME / "mcp.json"
+ENV_FILE = APP_HOME / ".env"
+DEFAULT_MCP_CONFIG = {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
+
+
+def prepare_app_home() -> bool:
+    """第一次运行时准备好配置文件。用户取消输入 API Key 时返回 False。"""
+    APP_HOME.mkdir(parents=True, exist_ok=True)
+    if not MCP_CONFIG.exists():
+        MCP_CONFIG.write_text(json.dumps(DEFAULT_MCP_CONFIG, indent=2), encoding="utf-8")
+    load_dotenv(ENV_FILE)
+    if os.getenv("LLM_API_KEY", "").strip():
+        return True
+    key, ok = QInputDialog.getText(None, "第一次使用",
+                                   f"请输入模型的 API Key\n（会保存在 {ENV_FILE}，以后不用再输）：",
+                                   QLineEdit.EchoMode.Password)
+    key = key.strip()
+    if not ok or not key:
+        return False
+    set_key(str(ENV_FILE), "LLM_API_KEY", key, quote_mode="never")
+    os.environ["LLM_API_KEY"] = key
+    return True
 
 
 def describe_call(name: str, args: dict) -> str:
@@ -180,6 +217,8 @@ class MainWindow(QMainWindow):
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Desktop Agent")
+    if not prepare_app_home():
+        sys.exit(0)
     workspace = Path(sys.argv[1]).expanduser().resolve() if len(sys.argv) > 1 else DEFAULT_WORKSPACE
 
     # ---- 先启动 MCP 服务器。配置文件写错不影响启动，只是不用 MCP
