@@ -5,4 +5,4 @@ python-dotenv>=1.0
 # 后面几个阶段会依次加入（现在先不用装）：
 PySide6>=6.11
 mcp>=2.3,<3
-# pyinstaller>=6.20    第 5 阶段：打包 .app / .exe
+pyinstaller>=6.20
