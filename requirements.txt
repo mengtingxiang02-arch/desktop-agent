@@ -3,6 +3,6 @@ openai>=3.40,<4
 python-dotenv>=1.0
 
 # 后面几个阶段会依次加入（现在先不用装）：
-# PySide6>=6.11        第 3 阶段：桌面界面
+PySide6>=6.11
 # mcp>=2.3,<3          第 4 阶段：接入 MCP（注意 mcp 2.x 和 1.x 的 API 不一样）
 # pyinstaller>=6.20    第 5 阶段：打包 .app / .exe
