@@ -1,9 +1,11 @@
-"""桌面版入口（第 3 阶段）。
+"""桌面版入口（第 3 阶段做界面，第 4 阶段接入 MCP）。
 
 用法：python gui.py [工作目录]      不写工作目录就用项目里的 playground
+MCP 服务器在项目根目录的 mcp.json 里配置。
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -12,11 +14,14 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QSplitter
 
 from agent import LLMError
+from agent.mcp_client import MCPManager, load_mcp_config
 from desktop.agent_bridge import AgentBridge
 from desktop.chat_panel import ChatPanel
 from desktop.file_panel import FilePanel, proposed_change
 
-DEFAULT_WORKSPACE = Path(__file__).resolve().parent / "playground"
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_WORKSPACE = PROJECT_ROOT / "playground"
+MCP_CONFIG = PROJECT_ROOT / "mcp.json"
 
 
 def describe_call(name: str, args: dict) -> str:
@@ -28,15 +33,19 @@ def describe_call(name: str, args: dict) -> str:
         return f"修改 {args.get('path')}"
     if name == "read_file":
         return f"读取 {args.get('path')}"
+    if name.startswith("mcp__"):                      # mcp__服务器__工具
+        _, server, tool = name.split("__", 2)
+        return f"MCP {server}.{tool} {json.dumps(args, ensure_ascii=False)[:200]}"
     return f"{name} {args}"
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, workspace: Path, llm=None):
+    def __init__(self, workspace: Path, llm=None, mcp: MCPManager | None = None):
         super().__init__()
         self.setWindowTitle("Desktop Agent")
         self.resize(1280, 800)
         self._llm = llm                        # 测试时传入假模型；正常运行是 None
+        self.mcp = mcp                         # 已经启动好的 MCP 服务器（没有就是 None）
         self.bridge: AgentBridge | None = None
         self._paths: dict[str, str] = {}       # tool_call 的 id → 它要写的文件，用来在写完后打开文件
 
@@ -68,7 +77,7 @@ class MainWindow(QMainWindow):
     def set_workspace(self, folder: Path) -> bool:
         folder.mkdir(parents=True, exist_ok=True)
         try:
-            bridge = AgentBridge(folder, llm=self._llm)
+            bridge = AgentBridge(folder, llm=self._llm, extra_tools=self.mcp.tools if self.mcp else None)
         except LLMError as e:
             QMessageBox.critical(self, "无法启动 Agent", str(e))
             return False
@@ -82,7 +91,11 @@ class MainWindow(QMainWindow):
         self.files.set_root(bridge.workspace)
         self.chat.clear()
         self.chat.set_busy(False)
-        self.statusBar().showMessage(f"模型：{bridge.model_name}    工作目录：{bridge.workspace}")
+        mcp_info = self.mcp.summary() if self.mcp else "MCP：未启用"
+        self.statusBar().showMessage(f"模型：{bridge.model_name}    工作目录：{bridge.workspace}    {mcp_info}")
+        if self.mcp:
+            for name, reason in self.mcp.errors.items():
+                self.chat.add_notice(f"⚠ MCP 服务器 {name} 启动失败：{reason}", "warning")
         return True
 
     def choose_folder(self) -> None:
@@ -159,6 +172,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self.bridge and self.bridge.busy:
             self.bridge.stop()
+        if self.mcp:
+            self.mcp.close()                   # 结束所有 MCP 服务器进程
         event.accept()
 
 
@@ -166,8 +181,22 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Desktop Agent")
     workspace = Path(sys.argv[1]).expanduser().resolve() if len(sys.argv) > 1 else DEFAULT_WORKSPACE
-    window = MainWindow(workspace)
+
+    # ---- 先启动 MCP 服务器。配置文件写错不影响启动，只是不用 MCP
+    mcp = MCPManager()
+    try:
+        servers = load_mcp_config(MCP_CONFIG)
+    except ValueError as e:
+        QMessageBox.warning(None, "mcp.json 有问题", f"{e}\n\n这次先不启用 MCP。")
+        servers = {}
+    if servers:
+        print(f"正在启动 {len(servers)} 个 MCP 服务器：{'、'.join(servers)} …", flush=True)
+    mcp.start(servers)
+    print(mcp.summary(), flush=True)
+
+    window = MainWindow(workspace, mcp=mcp)
     if window.bridge is None:     # Key 没配好，上面已经弹过错误提示了
+        mcp.close()
         sys.exit(1)
     window.show()
     sys.exit(app.exec())

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from agent import Agent, ChatLLM, load_config
+from agent import BUILTIN_TOOLS, Agent, ChatLLM, load_config
 
 
 class AgentBridge(QObject):
@@ -24,16 +24,18 @@ class AgentBridge(QObject):
     confirm_needed = Signal(str, object)  # 需要用户确认：(工具名, 参数)
     finished = Signal()                   # 一次 run() 结束（不管是正常完成、出错还是被停止）
 
-    def __init__(self, workspace: Path, llm=None):
-        """llm 参数留给测试用：传一个假模型进来，就不用真的调用 API。"""
+    def __init__(self, workspace: Path, llm=None, extra_tools=None):
+        """llm 参数留给测试用：传一个假模型进来，就不用真的调用 API。
+        extra_tools：内置四个工具之外的工具，第 4 阶段用来放 MCP 工具。"""
         super().__init__()
         cfg = load_config(workspace)
         if llm is None:
             llm = ChatLLM(cfg.api_key, cfg.base_url, cfg.model, thinking=cfg.thinking)  # Key 不对会在这里抛 LLMError
         self.model_name = cfg.model
         self.workspace = cfg.workspace
-        # 这一行要和 cli.py 里创建 Agent 的写法一致
-        self.agent = Agent(llm, cfg.workspace, max_steps=cfg.max_steps,
+        # 工具 = 内置的四个 + MCP 服务器提供的
+        tools = list(BUILTIN_TOOLS) + list(extra_tools or [])
+        self.agent = Agent(llm, cfg.workspace, tools=tools, max_steps=cfg.max_steps,
                            on_event=self._on_event, confirm=self._confirm)
         self.always_allowed: set[str] = set()
         self._answer = False
