@@ -1,98 +1,126 @@
-# Desktop Agent：用 Python 做一个桌面端 AI 编程助手
+# Desktop Agent：桌面端 AI 编程助手
 
-两周作业：做一个类似 Cursor / Claude Desktop 的桌面编程助手。
-要求：真正的桌面应用、三栏界面、read / write / edit / bash 四个工具、接入 MCP、错误处理、中断、打包成 .exe / .dmg。
+>姓名：项梦婷
 
-## 两周路线
+一个用 Python 编写的桌面 AI 编程助手，类似 Cursor / Claude Desktop：用自然语言描述任务，它会自己读写文件、执行命令、调用 MCP 工具，一步步完成编程任务。
 
-| 阶段 | 时间 | 做什么 | 对应作业要求 |
-|---|---|---|---|
-| **1 ✅** | 第 1–2 天 | Agent 核心循环 + 四个工具，先在命令行里跑通 | 四个工具、错误处理、中断（逻辑层） |
-| **2 ✅** | 第 3 天 | 流式输出（字一个个出来），让"停止"在模型说话中途也能生效 | 中断 |
-| 3 | 第 4–7 天 | PySide6 三栏界面：左文件树、中间文件查看/修改对比、右边对话；Agent 跑在后台线程 | 桌面应用、三栏界面 |
-| 4 | 第 8–9 天 | 接入 MCP：读 `mcp.json` 启动 MCP 服务器，把它们的工具并进工具列表 | MCP |
-| 5 | 第 10–11 天 | PyInstaller 打包 → macOS .app → .dmg；Windows .exe | 打包 |
-| 6 | 第 12–14 天 | 测试、打磨、写说明、录演示视频、提交 | — |
+![主界面](docs/main.png)
 
-**为什么选 PySide6（Qt）做界面？** 作业要求"不能只跑在 localhost"，所以 Streamlit、Gradio、Flask 这类在浏览器里打开的网页都不算。Qt 是原生桌面界面库，Windows 和 macOS 都能用，而且 PyInstaller 对它支持很成熟。
+## 功能与作业要求对照
 
-## 第 1 阶段：在 Mac 上跑起来
+| 作业要求 | 实现方式 |
+|---|---|
+| 真正的桌面应用 | PySide6（Qt）原生窗口，不依赖浏览器或 localhost |
+| 三栏界面 | 左：文件树　中：文件内容 / 改动对比　右：对话 |
+| 四个核心工具 | `read_file`、`write_file`、`edit_file`、`bash`（`agent/tools.py`） |
+| 接入 MCP | 按 `mcp.json` 启动 MCP 服务器，把它的工具并入 Agent 的工具列表（`agent/mcp_client.py`），默认接入官方 fetch 服务器 |
+| 错误处理 | 工具出错时把错误交回模型自行修正；API Key、网络、服务器繁忙（503）等错误显示中文说明；MCP 服务器启动失败不影响其它功能 |
+| 中断 | "停止"按钮可以打断模型输出、正在运行的命令（连同它启动的子进程）和 MCP 调用 |
+| 打包 | macOS：PyInstaller → `.app` → `.dmg`；Windows：GitHub Actions 在云端打包 `.exe` |
 
-```bash
-# 1. 解压后进入项目（放在哪里都行）
-cd ~/Documents/GitHub/desktop-agent
+## 工作原理
 
-# 2. 建一个 Python 3.13 的虚拟环境并装依赖（如果提示 uv: command not found，先执行 export PATH="$HOME/.local/bin:$PATH"）
-uv venv --python 3.13
-source .venv/bin/activate
-uv pip install -r requirements.txt
+Agent 的核心是 ReAct 循环（`agent/core.py`）：
 
-# 3. 跑测试：不需要 API Key，32 个测试应该全部 OK
-python -m unittest
-
-# 4. 配置 Key：复制模板，用文本编辑器打开，把 LLM_API_KEY 换成你的
-cp .env.example .env
-open -e .env
-
-# 5. 启动！playground 是给 Agent 折腾的工作目录，会自动创建
-python cli.py playground
-```
-
-DeepSeek 的 Key 在 https://platform.deepseek.com 的「API keys」里创建，需要先充一点钱（按 token 计费，做作业用量很小）。
-用别家模型（通义千问、Kimi、智谱……）也可以，只要它提供 OpenAI 兼容接口：改 `.env` 里的 `LLM_BASE_URL` 和 `LLM_MODEL` 即可。
-
-启动后可以试试：
-
-> 写一个猜数字游戏 guess.py：程序随机选 1 到 100 的数，用户猜，提示大了还是小了。再写一个 test_guess.py 用 unittest 测试判断大小的函数，并运行测试。
-
-你会看到它依次 写文件 → 跑测试 → 如果失败就读报错、改代码 → 再跑，直到通过。每次写文件、改文件、跑命令前都会问你 `[y/n/a]`。任务进行中按 `Ctrl+C` 可以打断。
-
-## 代码结构（建议按这个顺序读）
+1. 把对话历史和工具说明发给模型（Thought）；
+2. 模型返回要调用的工具（Action）；
+3. 程序执行工具，把结果作为观察追加进对话历史（Observation）；
+4. 重复以上步骤，直到模型不再调用工具，给出最终回答。
 
 ```
 desktop-agent/
-├── agent/
-│   ├── tools.py    ① 四个工具：每个 = JSON Schema（给模型看的说明书）+ Python 函数（真正干活）
-│   ├── core.py     ② Agent 循环：问模型 → 执行工具 → 把结果交回去 → 再问，直到模型给出最终回答
-│   ├── llm.py      ③ 和模型通信：OpenAI 兼容接口、错误翻译、DeepSeek 的 reasoning_content 处理
-│   └── config.py   ④ 读 .env 配置
-├── cli.py          ⑤ 命令行界面（第 3 阶段会换成桌面界面，①–④ 不用改）
-└── tests/          ⑥ 32 个测试，用"假模型"和"假服务器"验证所有逻辑
+├── agent/              核心逻辑（与界面无关）
+│   ├── core.py         ReAct 循环、事件、中断
+│   ├── tools.py        四个内置工具
+│   ├── llm.py          调用模型（OpenAI 兼容接口，流式接收）
+│   ├── mcp_client.py   MCP 客户端
+│   └── config.py       读取 .env 配置
+├── desktop/            界面
+│   ├── file_panel.py   左栏和中栏
+│   ├── chat_panel.py   右栏
+│   └── agent_bridge.py 后台线程与界面之间的桥
+├── gui.py              桌面版入口
+├── cli.py              命令行版入口
+├── mcp.json            MCP 服务器配置
+└── tests/              41 个自动化测试
 ```
 
-### 和课上 ReAct 的对应
+几个设计要点：
 
-| 课件里的 ReAct | 代码里 |
+- **界面不卡**：Agent 在后台线程运行，通过 Qt 信号把事件送回主线程更新界面；输入框上方实时显示"思考中 / 正在执行 / 等你确认"和已用秒数。
+- **执行前确认**：写文件、改文件、执行命令、调用 MCP 工具之前都会弹窗确认；改文件时，中栏会先显示改动对比。
+- **文件工具限制在工作目录内**：`read_file`、`write_file`、`edit_file` 拒绝访问工作目录以外的路径。
+- **DeepSeek 思考模式**：开启思考时，带工具的请求必须把上一轮的 `reasoning_content` 原样传回，否则接口返回 400。程序会保留并回传它，测试中用假服务器模拟了这条规则。
+
+## 运行方法
+
+### 方式一：使用安装包
+
+**macOS（仅支持 Apple 芯片）**：打开 `Desktop-Agent.dmg`，把 Desktop Agent 拖进"应用程序"。程序没有签名，第一次打开会被系统拦下，需要到 **系统设置 → 隐私与安全性**，点 **仍要打开**。
+
+**Windows**：双击 `DesktopAgent.exe`。出现"Windows 已保护你的电脑"时，点 **更多信息 → 仍要运行**。每次启动需要等十几秒。
+
+第一次打开时会要求输入 API Key。配置和工作目录保存在用户主目录下的 `DesktopAgent` 文件夹里：
+
+| 文件 | 作用 |
 |---|---|
-| Thought（想下一步） | `core.py` 里 `self.llm.chat(self.messages, tool_schemas)`：把全部历史发给模型 |
-| Action（调用工具） | 模型返回的 `tool_calls`，例如 `{"name": "bash", "arguments": "{\"command\": \"ls\"}"}` |
-| Observation（观察结果） | `_execute()` 执行后，追加一条 `{"role": "tool", "tool_call_id": ..., "content": 结果}` |
-| 结束 | 模型某一轮不再返回 `tool_calls`，它说的话就是最终回答 |
+| `.env` | API Key 和模型设置 |
+| `mcp.json` | MCP 服务器配置 |
+| `playground/` | 默认工作目录 |
 
-ReAct 论文原版的做法是让模型在文本里写 `Action: xxx`，再由程序从文字里解析出来。现在的模型 API 有原生的 tool calling，模型直接返回结构化的 JSON，不用自己解析，更可靠，循环的原理完全一样。
+MCP 的 fetch（读网页）功能需要电脑上装有 [uv](https://docs.astral.sh/uv/)。没装的话，程序照常运行，只会提示 fetch 启动失败。
 
-## 几个值得弄懂的设计
+### 方式二：从源码运行
 
-1. **模型没有记忆，`self.messages` 就是它的记忆。** 每一轮都把完整历史重新发过去，它才知道刚才读过什么。
-2. **工具出错不抛给用户，而是作为 Observation 交回给模型。** 比如 `edit_file` 找不到原文，模型看到错误会先 `read_file` 再重试。这就是 Agent 能"自己修 bug"的原因。
-3. **中断时要给每个没执行的 `tool_call` 补一条 tool 消息。** API 规定 assistant 的每个 tool_call 后面必须跟对应的 tool 结果，否则下一次请求直接 400，对话就坏了。见 `test_cancel_fills_every_tool_call`。
-4. **`edit_file` 要求 `old_string` 只出现一次。** 保证改的就是模型想改的那一处，不会误伤。
-5. **路径限制在工作目录里。** `resolve_path()` 拒绝 `../`、绝对路径等越界访问。
-6. **DeepSeek V4 的坑：** 思考模式默认开启，返回里多一个 `reasoning_content`。只要请求带了 tools，之后每次都必须原样传回，否则 400。`llm.py` 的 `message_to_dict()` 专门处理它，`test_llm_http.py` 用假服务器模拟了这条规则。
+需要 Python 3.13 和 uv。
 
-## 动手练习（建议做，答辩时会被问到）
+```bash
+uv venv --python 3.13
+source .venv/bin/activate          # Windows 上是 .venv\Scripts\activate
+uv pip install -r requirements.txt
+cp .env.example .env               # 然后在 .env 里填入 API Key
+python -m unittest                 # 运行测试
+python gui.py                      # 桌面版
+python cli.py playground           # 命令行版
+```
 
-1. **画一遍 messages。** 读 `tests/test_agent.py` 的 `test_full_react_loop`，在纸上写出每次请求时 `messages` 列表的样子。
-2. **加一道安全闸。** 在 `bash()` 开头拒绝明显危险的命令（如包含 `rm -rf /`、`sudo`、`mkfs`），抛 `ToolError`。再在 `tests/test_tools.py` 里加一个测试证明它生效。
-3. **亲眼看看那个 400。** 在 `llm.py` 里临时注释掉 `out["reasoning_content"] = reasoning` 这一行，`.env` 里设 `LLM_THINKING=on`，让 Agent 做一个要用工具的任务，看报什么错；然后改回来。
+### 配置项（.env）
 
-## 常见报错
+| 变量 | 说明 | 默认值 |
+|---|---|---|
+| `LLM_API_KEY` | 模型的 API Key | 必填 |
+| `LLM_BASE_URL` | OpenAI 兼容接口地址 | `https://api.deepseek.com` |
+| `LLM_MODEL` | 模型名 | `deepseek-flash` |
+| `LLM_THINKING` | 思考模式，`on` 或 `off` | 服务商默认 |
+| `AGENT_MAX_STEPS` | 一次任务最多执行几步 | `30` |
 
-| 现象 | 原因 |
-|---|---|
-| `没有配置 API Key` | 没有 `.env` 文件，或里面的 `LLM_API_KEY` 是空的 |
-| `API Key 无效（401）` | Key 复制错了，或多了空格 |
-| `账户余额不足（402）` | 需要到 DeepSeek 平台充值 |
-| `接口地址或模型名不对（404）` | 检查 `LLM_BASE_URL` 和 `LLM_MODEL` |
-| `连不上模型服务` | 网络或代理问题 |
-| `ModuleNotFoundError: openai` | 忘了 `source .venv/bin/activate` |
+要换成其它提供 OpenAI 兼容接口的模型（如通义千问、Kimi、智谱），只需修改 `LLM_BASE_URL` 和 `LLM_MODEL`。
+
+### 打包方法
+
+- **macOS**：`pyinstaller --noconfirm "Desktop Agent.spec"` 生成 `.app`，再用 `hdiutil` 做成 `.dmg`。
+- **Windows**：在 GitHub 仓库的 Actions 页面手动运行 **Build Windows exe**（配置文件：`.github/workflows/build-windows.yml`）。
+
+## 测试情况
+
+**自动化测试**：共 41 个（`python -m unittest`），不需要 API Key。用假模型测试循环逻辑，用本地假服务器测试流式接收和错误处理，用本地 MCP 服务器测试 MCP 客户端。
+
+**手动测试**：
+
+| 平台 | 测试内容 | 结果 |
+|---|---|---|
+| macOS 【26.6 (25G72)】，Apple 芯片 | 源码版和 .app：写文件、改文件、运行命令、停止、拒绝、MCP 读网页、MCP 服务器启动失败、mcp.json 写错 | 通过 |
+| Windows 【10】 | .exe：写文件、改文件、运行命令、停止、拒绝；未装 uv 时 MCP 启动失败的提示；装好 uv 后用 MCP 读网页 | 通过 |
+
+![Windows：MCP 服务器启动失败时程序照常运行](docs/windows-mcp-fail.png)
+
+![Windows：装好 uv 后通过 MCP 读取网页](docs/windows-mcp-ok.png)
+
+## 已知限制
+
+- 安装包没有经过苹果和微软的签名，第一次打开需要手动放行。
+- macOS 安装包只支持 Apple 芯片的 Mac。
+- `bash` 工具没有限制在工作目录内，靠执行前的确认防止误操作。
+- 对话区不渲染 Markdown，模型输出的 `**粗体**` 等格式会原样显示。
+- Agent 执行命令时用的是电脑上安装的 Python，不是安装包里内置的。电脑上没装 Python 时，无法让它运行 Python 程序。
+- 自动化测试用到了 `sleep`、`sh` 等命令，只能在 macOS 和 Linux 上运行。
