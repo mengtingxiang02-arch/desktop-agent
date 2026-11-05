@@ -52,15 +52,17 @@ desktop-agent/
 - **文件工具限制在工作目录内**：`read_file`、`write_file`、`edit_file` 拒绝访问工作目录以外的路径。
 - **DeepSeek 思考模式**：开启思考时，带工具的请求必须把上一轮的 `reasoning_content` 原样传回，否则接口返回 400。程序会保留并回传它，测试中用假服务器模拟了这条规则。
 
-## 运行方法
+## 三步启动
 
-### 方式一：使用安装包
+### 用安装包（推荐）
 
-**macOS（仅支持 Apple 芯片）**：打开 `Desktop-Agent.dmg`，把 Desktop Agent 拖进"应用程序"。程序没有签名，第一次打开会被系统拦下，需要到 **系统设置 → 隐私与安全性**，点 **仍要打开**。
+1. 到 [Releases](https://github.com/mengtingxiang02-arch/desktop-agent/releases) 下载安装包：Mac（Apple 芯片）下载 `.dmg`，Windows 下载 `.exe`。
+2. 双击打开。程序没有签名，第一次会被系统拦下：
+   - **Mac**：先把 Desktop Agent 拖进"应用程序"再打开；被拦下后到 **系统设置 → 隐私与安全性**，点 **仍要打开**。
+   - **Windows**：点 **更多信息 → 仍要运行**。每次启动需要十几秒。
+3. 在弹出的窗口里输入模型的 API Key，主窗口就出来了。
 
-**Windows**：双击 `DesktopAgent.exe`。出现"Windows 已保护你的电脑"时，点 **更多信息 → 仍要运行**。每次启动需要等十几秒。
-
-第一次打开时会要求输入 API Key。配置和工作目录保存在用户主目录下的 `DesktopAgent` 文件夹里：
+配置和工作目录保存在用户主目录下的 `DesktopAgent` 文件夹里：
 
 | 文件 | 作用 |
 |---|---|
@@ -68,21 +70,28 @@ desktop-agent/
 | `mcp.json` | MCP 服务器配置 |
 | `playground/` | 默认工作目录 |
 
-MCP 的 fetch（读网页）功能需要电脑上装有 [uv](https://docs.astral.sh/uv/)。没装的话，程序照常运行，只会提示 fetch 启动失败。
+MCP 的 fetch（读网页）功能需要电脑上装有 [uv](https://docs.astral.sh/uv/)。没装时程序照常运行，只会提示 fetch 启动失败。
 
-### 方式二：从源码运行
+### 从源码运行
 
-需要 Python 3.13 和 uv。
+前提：装好 [uv](https://docs.astral.sh/uv/)，它会自动下载 Python 3.13。
 
-```bash
-uv venv --python 3.13
-source .venv/bin/activate          # Windows 上是 .venv\Scripts\activate
-uv pip install -r requirements.txt
-cp .env.example .env               # 然后在 .env 里填入 API Key
-python -m unittest                 # 运行测试
-python gui.py                      # 桌面版
-python cli.py playground           # 命令行版
-```
+1. 下载代码并安装依赖：
+   ```bash
+   git clone https://github.com/mengtingxiang02-arch/desktop-agent.git
+   cd desktop-agent
+   uv venv --python 3.13 && uv pip install -r requirements.txt
+   ```
+2. 配置 Key：把 `.env.example` 复制成 `.env`（Windows 上用 `copy`），在 `LLM_API_KEY=` 后面填上你的 Key。
+   ```bash
+   cp .env.example .env
+   ```
+3. 启动：
+   ```bash
+   .venv/bin/python gui.py          # Windows：.venv\Scripts\python gui.py
+   ```
+
+运行测试：`.venv/bin/python -m unittest`；命令行版：`.venv/bin/python cli.py playground`。
 
 ### 配置项（.env）
 
