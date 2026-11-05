@@ -34,9 +34,28 @@ OUTPUT = PROJECT / "docs" / "trace.md"
 TASK = ("这个项目的测试没有通过。请先运行 test_stats.py 看看哪里失败，"
         "然后修改 stats.py 把问题修好（不要改测试文件），最后再运行一次测试，确认全部通过。")
 
-# 有 bug 的代码：mean 和 mean_abs 遇到空列表会除以 0，median 遇到偶数个数时算错。
-# 两个函数的最后一行一模一样，用 edit_file 改的时候，只给这一行会因为"出现了 2 次"而失败。
+# 有 bug 的代码，一共四处：
+# - find_index（二分查找）写成了 lo = mid，某些输入会死循环：一运行测试就卡住，
+#   bash 工具超时报错，Agent 必须自己判断是死循环、去读代码找原因；
+#   卡住时其它测试的结果也看不到，修好这一处以后才会暴露出下面三处；
+# - mean 和 mean_abs 遇到空列表会除以 0。两个函数的最后一行一模一样，
+#   用 edit_file 只改这一行会因为"出现了 2 次"而失败；
+# - median 遇到偶数个数时算错。
 STATS_PY = '''"""一个小小的统计工具包。"""
+
+
+def find_index(sorted_nums, target):
+    """在升序列表里用二分查找找 target，返回它的下标；找不到返回 -1。"""
+    lo, hi = 0, len(sorted_nums) - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if sorted_nums[mid] == target:
+            return mid
+        if sorted_nums[mid] < target:
+            lo = mid
+        else:
+            hi = mid - 1
+    return -1
 
 
 def mean(nums):
@@ -66,10 +85,15 @@ def median(nums):
 
 TEST_STATS_PY = '''import unittest
 
-from stats import mean, mean_abs, median
+from stats import find_index, mean, mean_abs, median
 
 
 class StatsTests(unittest.TestCase):
+    def test_find_index(self):
+        self.assertEqual(find_index([1, 3, 5, 7], 3), 1)
+        self.assertEqual(find_index([1, 3, 5, 7], 7), 3)
+        self.assertEqual(find_index([1, 3, 5, 7], 4), -1)
+
     def test_mean(self):
         self.assertEqual(mean([1, 2, 3]), 2)
         self.assertEqual(mean([]), 0)
@@ -218,8 +242,11 @@ def status(entry: dict) -> str:
 
 def run_tests() -> tuple[bool, str]:
     """录完以后，脚本自己再跑一次测试，不只听模型说"已经通过了"。"""
-    proc = subprocess.run([sys.executable, "-m", "unittest", "test_stats"], cwd=WORKSPACE,
-                          capture_output=True, text=True, timeout=60)
+    try:
+        proc = subprocess.run([sys.executable, "-m", "unittest", "test_stats"], cwd=WORKSPACE,
+                              capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return False, "复查时测试超过 30 秒还没结束，死循环没有修好"
     return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
 
 
@@ -261,8 +288,14 @@ def write_markdown(rec: Recorder, info: dict, answer: str) -> str:
         "## 运行过程",
     ]
 
+    texts = [e for e in rec.entries if e["kind"] == "text"]
+    final_text = texts[-1] if texts and texts[-1]["text"].strip() == answer.strip() else None
+
     for e in rec.entries:
         kind = e["kind"]
+        if e is final_text:
+            out += ["（最终回答，见下一节）", ""]       # 不重复贴两遍
+            continue
         if kind == "step":
             out += ["", f"### 第 {e['n']} 步　<sub>{e['t']:.1f} 秒</sub>", ""]
         elif kind == "thinking":
