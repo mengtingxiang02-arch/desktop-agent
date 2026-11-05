@@ -42,6 +42,7 @@ desktop-agent/
 ├── gui.py              桌面版入口
 ├── cli.py              命令行版入口
 ├── mcp.json            MCP 服务器配置
+├── scripts/record_trace.py  录一次真实运行，生成 docs/trace.md
 └── tests/              56 个自动化测试
 ```
 
