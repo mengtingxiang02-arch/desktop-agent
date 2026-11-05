@@ -109,8 +109,8 @@ python cli.py playground           # 命令行版
 
 | 平台 | 测试内容 | 结果 |
 |---|---|---|
-| macOS 【26.6 (25G72)】，Apple 芯片 | 源码版和 .app：写文件、改文件、运行命令、停止、拒绝、MCP 读网页、MCP 服务器启动失败、mcp.json 写错 | 通过 |
-| Windows 【10】 | .exe：写文件、改文件、运行命令、停止、拒绝；未装 uv 时 MCP 启动失败的提示；装好 uv 后用 MCP 读网页 | 通过 |
+| macOS26.6 (25G72)，Apple 芯片 | 源码版和 .app：写文件、改文件、运行命令、停止、拒绝、MCP 读网页、MCP 服务器启动失败、mcp.json 写错 | 通过 |
+| Windows 10| .exe：写文件、改文件、运行命令、停止、拒绝；未装 uv 时 MCP 启动失败的提示；装好 uv 后用 MCP 读网页 | 通过 |
 
 ![Windows：MCP 服务器启动失败时程序照常运行](docs/windows-mcp-fail.png)
 
