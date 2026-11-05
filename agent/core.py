@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .llm import LLMCancelled
+from .guard import RepeatGuard
 from .tools import BUILTIN_TOOLS, Tool, ToolCancelled, ToolContext, ToolError
 
 # 事件回调：on_event(事件类型, 数据)
@@ -87,6 +88,7 @@ class Agent:
         self.max_steps = max_steps
         self.on_event = on_event or (lambda kind, data: None)
         self.confirm = confirm or (lambda name, args: True)
+        self.repeat_guard = RepeatGuard(limit=3)   # 防死循环
         self.cancel_event = threading.Event()
         self.messages: list[dict] = [
             {"role": "system", "content": system_prompt or build_system_prompt(self.workspace)}
@@ -104,6 +106,7 @@ class Agent:
 
     def run(self, user_text: str) -> str:
         """处理一次用户输入，直到模型给出最终回答、出错、被中断或达到步数上限。"""
+        self.repeat_guard.reset()                  # 每次新提问重新计数
         self.cancel_event.clear()
         self.messages.append({"role": "user", "content": user_text})
         tool_schemas = [t.schema() for t in self.tools.values()]
@@ -206,6 +209,13 @@ class Agent:
             return result
 
         self.on_event("tool_call", {"id": call_id, "name": name, "args": args})
+
+        # 防死循环：同样的调用连续出现太多次，不执行，直接提醒模型换做法
+        problem = self.repeat_guard.check(name, args)
+        if problem:
+            self.on_event("warning", {"text": f"{name} 被连续用相同参数调用，已拦下并提醒模型换做法"})
+            self.on_event("tool_result", {"id": call_id, "name": name, "result": problem, "ok": False})
+            return problem
 
         # 2. 找工具
         tool = self.tools.get(name)
