@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 import sys
+import time
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import (QApplication, QHBoxLayout, QPlainTextEdit, QPushButton,
+from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
                                QTextBrowser, QVBoxLayout, QWidget)
 
 COLORS = {"user": "#3b82f6", "tool": "#8b5cf6", "dim": "#8b949e",
@@ -38,6 +39,14 @@ class ChatPanel(QWidget):
         self.view = QTextBrowser()
         self.view.setOpenExternalLinks(True)
 
+        # 状态提示：告诉用户 Agent 现在在干什么、已经等了多久，免得以为程序卡死了
+        self.status_label = QLabel()
+        self.status_label.setStyleSheet(f"color: {COLORS['dim']};")
+        self._status_text = ""
+        self._status_started = 0.0
+        self._status_timer = QTimer(self)
+        self._status_timer.timeout.connect(self._refresh_status)   # 每秒刷新一次秒数
+
         self.input = InputBox()
         self.input.setPlaceholderText("输入任务，回车发送，Shift+回车换行")
         self.input.setFixedHeight(80)
@@ -57,6 +66,7 @@ class ChatPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.view, 1)    # 1 = 多出来的高度都给对话区
+        layout.addWidget(self.status_label)
         layout.addWidget(self.input)
         layout.addLayout(buttons)
 
@@ -74,6 +84,27 @@ class ChatPanel(QWidget):
         """Agent 工作时：不能再发送，可以停止。"""
         self.send_btn.setEnabled(not busy)
         self.stop_btn.setEnabled(busy)
+
+    def set_status(self, text: str) -> None:
+        """在输入框上方显示 Agent 正在做什么。传空字符串表示清除。
+
+        计时从第一次设置状态开始，直到清除为止，中间换状态不会重新计时。
+        """
+        if text and not self._status_text:
+            self._status_started = time.monotonic()
+            self._status_timer.start(1000)
+        if not text:
+            self._status_timer.stop()
+        self._status_text = text
+        self._refresh_status()
+
+    def _refresh_status(self) -> None:
+        if not self._status_text:
+            self.status_label.clear()
+            return
+        seconds = int(time.monotonic() - self._status_started)
+        hint = "    等太久可以点「停止」" if seconds >= 20 else ""
+        self.status_label.setText(f"⏳ {self._status_text}（已 {seconds} 秒）{hint}")
 
     # ------------------------------------------------ 输出
 
@@ -146,10 +177,12 @@ if __name__ == "__main__":
     def fake_reply(text: str) -> None:
         panel.add_user(text)
         panel.set_busy(True)
+        panel.set_status("思考中…")
         pieces = list(f"你刚才说的是：{text}。这是一段模拟的流式回复，字会一个个出来。")
 
         def tick():
             if pieces:
+                panel.set_status("正在回答…")
                 panel.append_delta(pieces.pop(0))
             else:
                 timer.stop()
@@ -157,18 +190,22 @@ if __name__ == "__main__":
                 panel.add_tool_call("$ ls -la")
                 panel.add_tool_result("exit code: 0\n[stdout]\nhello.py", ok=True)
                 panel.set_busy(False)
+                panel.set_status("")
 
         timer = QTimer(panel)
         timer.timeout.connect(tick)
-        timer.start(40)
-        panel._demo_timer = timer          # 存起来，防止被当成垃圾回收
+        starter = QTimer(panel)            # 先"思考"3 秒，再开始一个字一个字地回答
+        starter.setSingleShot(True)
+        starter.timeout.connect(lambda: timer.start(80))
+        starter.start(3000)
+        panel._demo_timers = (starter, timer)   # 存起来，防止被当成垃圾回收
 
     def stop():
-        timer = getattr(panel, "_demo_timer", None)
-        if timer:
-            timer.stop()
+        for t in getattr(panel, "_demo_timers", ()):
+            t.stop()
         panel.add_notice("■ 已停止", "warning")
         panel.set_busy(False)
+        panel.set_status("")
 
     panel.send_requested.connect(fake_reply)
     panel.stop_requested.connect(stop)
