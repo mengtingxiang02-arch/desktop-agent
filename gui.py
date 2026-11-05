@@ -1,4 +1,4 @@
-"""桌面版入口（第 3 阶段做界面，第 4 阶段接入 MCP，第 5 阶段支持打包）。
+"""桌面版入口（第 3 阶段做界面，第 4 阶段接入 MCP，第 5 阶段支持打包，第 6 阶段打磨）。
 
 用法：python gui.py [工作目录]      不写工作目录就用 playground
 平时运行源码时，.env、mcp.json、playground 都在项目文件夹里；
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -59,6 +60,18 @@ def prepare_app_home() -> bool:
     set_key(str(ENV_FILE), "LLM_API_KEY", key, quote_mode="never")
     os.environ["LLM_API_KEY"] = key
     return True
+
+
+def friendly_error(text: str) -> str:
+    """给模型服务器的 5xx 错误补一句中文说明。只补充、不替换：原始信息留着，方便排查。"""
+    code = re.search(r"\b(50[0-4])\b", text)
+    if (code and code.group(1) == "503") or "too busy" in text.lower():
+        hint = "模型服务器太忙（503），不是你的程序出了问题。过几分钟再试，或者在 .env 里把 LLM_MODEL 换成别的模型。"
+    elif code:
+        hint = f"模型服务器内部出错（{code.group(1)}），不是你的程序出了问题，稍后再试。"
+    else:
+        return text
+    return f"{hint}\n原始信息：{text}"
 
 
 def describe_call(name: str, args: dict) -> str:
@@ -155,6 +168,7 @@ class MainWindow(QMainWindow):
             return
         self.chat.add_user(text)
         self.chat.set_busy(True)
+        self.chat.set_status("思考中…")
         self.bridge.send(text)
 
     def on_stop(self) -> None:
@@ -163,19 +177,23 @@ class MainWindow(QMainWindow):
 
     def on_finished(self) -> None:
         self.chat.set_busy(False)
+        self.chat.set_status("")
 
     # ------------------------------------------------ Agent 事件（已经回到主线程）
 
     def on_agent_event(self, kind: str, data: dict) -> None:
         if kind == "assistant_delta":
+            self.chat.set_status("正在回答…")
             self.chat.append_delta(data["text"])
         elif kind == "assistant_text":
             self.chat.finish_assistant(data["text"])
         elif kind == "tool_call":
+            self.chat.set_status(f"正在执行：{describe_call(data['name'], data['args'])}")
             self.chat.add_tool_call(describe_call(data["name"], data["args"]))
             if data["name"] in ("write_file", "edit_file"):
                 self._paths[data["id"]] = str(data["args"].get("path", ""))
         elif kind == "tool_result":
+            self.chat.set_status("思考中…")             # 工具做完了，结果交回给模型，模型接着想下一步
             self.chat.add_tool_result(data["result"], data["ok"])
             path = self._paths.pop(data["id"], None)
             if data["ok"] and path:
@@ -183,7 +201,7 @@ class MainWindow(QMainWindow):
         elif kind == "warning":
             self.chat.add_notice(f"⚠ {data['text']}", "warning")
         elif kind == "error":
-            self.chat.add_notice(f"✗ {data['text']}", "error")
+            self.chat.add_notice(f"✗ {friendly_error(data['text'])}", "error")
         elif kind == "cancelled":
             self.chat.add_notice("■ 已停止", "warning")
         # 其它事件（比如 done）界面上不需要显示
@@ -194,6 +212,7 @@ class MainWindow(QMainWindow):
             if change:
                 self.files.show_diff(*change)        # 中栏切到"改动"，让用户看清要改什么
 
+        self.chat.set_status(f"等你确认：{describe_call(tool, args)}")
         box = QMessageBox(self)
         box.setWindowTitle("需要确认")
         box.setText("Agent 想要执行：")
@@ -204,7 +223,9 @@ class MainWindow(QMainWindow):
         box.exec()
 
         clicked = box.clickedButton()
-        self.bridge.answer(clicked in (allow, always), always=clicked is always, tool=tool)
+        allowed = clicked in (allow, always)
+        self.chat.set_status(f"正在执行：{describe_call(tool, args)}" if allowed else "思考中…")
+        self.bridge.answer(allowed, always=clicked is always, tool=tool)
 
     def closeEvent(self, event) -> None:
         if self.bridge and self.bridge.busy:
