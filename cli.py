@@ -163,7 +163,7 @@ def main() -> None:
 
     agent_ref: list = []
     agent = Agent(llm, cfg.workspace, max_steps=cfg.max_steps,
-                  on_event=on_event, confirm=make_confirm(agent_ref))
+                  on_event=on_event, confirm=make_confirm(agent_ref), vision=cfg.vision)
     agent_ref.append(agent)
 
     out(f"{GREEN}{BOLD}Desktop Agent · 命令行版{RESET}")

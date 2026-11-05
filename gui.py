@@ -142,7 +142,8 @@ class MainWindow(QMainWindow):
         self.chat.clear()
         self.chat.set_busy(False)
         mcp_info = self.mcp.summary() if self.mcp else "MCP：未启用"
-        self.statusBar().showMessage(f"模型：{bridge.model_name}    工作目录：{bridge.workspace}    {mcp_info}")
+        vision = "（可看图）" if bridge.vision else ""
+        self.statusBar().showMessage(f"模型：{bridge.model_name}{vision}    工作目录：{bridge.workspace}    {mcp_info}")
         if self.mcp:
             for name, reason in self.mcp.errors.items():
                 self.chat.add_notice(f"⚠ MCP 服务器 {name} 启动失败：{reason}", "warning")

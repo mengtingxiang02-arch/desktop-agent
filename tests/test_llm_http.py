@@ -5,6 +5,7 @@
 2. DeepSeek 思考模式的坑：带 tools 时，reasoning_content 必须原样传回，否则服务器返回 400。
    这个假服务器就模拟了这条规则。
 """
+import base64
 import json
 import os
 import tempfile
@@ -16,6 +17,9 @@ from pathlib import Path
 
 from agent.core import Agent
 from agent.llm import ChatLLM, LLMError
+
+# 一张 1×1 像素的 PNG 图片
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
 
 
 def completion(message, finish="stop"):
@@ -104,6 +108,15 @@ class FakeDeepSeek(BaseHTTPRequestHandler):
         if FakeDeepSeek.mode == "unauthorized":
             return self._send(401, {"error": {"message": "Authentication Fails", "type": "authentication_error"}})
 
+        # 模拟纯文字模型收到图片时的报错（DeepSeek 的纯文字模型就是这样回的）
+        has_image = any(isinstance(m.get("content"), list) and
+                        any(part.get("type") == "image_url" for part in m["content"])
+                        for m in body["messages"])
+        if has_image and FakeDeepSeek.mode == "text_only":
+            return self._send(400, {"error": {
+                "message": "Failed to deserialize the JSON body: unknown variant `image_url`, expected `text`",
+                "type": "invalid_request_error"}})
+
         # 模拟 DeepSeek 的规则：带 tools 时，历史里每条 assistant 消息都要有 reasoning_content
         if body.get("tools"):
             for m in body["messages"]:
@@ -114,6 +127,15 @@ class FakeDeepSeek(BaseHTTPRequestHandler):
 
         n_assistant = sum(1 for m in body["messages"] if m["role"] == "assistant")
         try:
+            if FakeDeepSeek.mode in ("vision", "text_only"):
+                if n_assistant == 0:
+                    return self._reply(body, {
+                        "role": "assistant", "content": "", "reasoning_content": "先读图片。",
+                        "tool_calls": [{"id": "call_1", "type": "function", "function": {
+                            "name": "read_file", "arguments": json.dumps({"path": "dot.png"})}}],
+                    }, "tool_calls")
+                return self._reply(body, {"role": "assistant", "content": "图里是一个点。",
+                                          "reasoning_content": "看到了。"}, "stop")
             if n_assistant == 0:
                 return self._reply(body, {
                     "role": "assistant", "content": "",
@@ -221,6 +243,37 @@ class HttpEndToEndTests(unittest.TestCase):
     def test_missing_key(self):
         with self.assertRaisesRegex(LLMError, "没有配置 API Key"):
             ChatLLM("", self.base_url, "deepseek-flash")
+
+    # ---- 读图片
+    def test_image_reaches_server_as_image_url_block(self):
+        """图片经过真正的 OpenAI SDK 发出去，服务器收到的是标准的 image_url 内容块。"""
+        FakeDeepSeek.mode = "vision"
+        (self.ws / "dot.png").write_bytes(PNG)
+        llm = ChatLLM("sk-test", self.base_url, "deepseek-flash", max_retries=0)
+        agent = Agent(llm, self.ws, vision=True)
+        self.assertEqual(agent.run("看看 dot.png"), "图里是一个点。")
+
+        last = FakeDeepSeek.requests[-1]["messages"][-1]
+        self.assertEqual(last["role"], "user")
+        self.assertEqual(last["content"][1]["type"], "image_url")
+        url = last["content"][1]["image_url"]["url"]
+        self.assertEqual(base64.b64decode(url.split(",", 1)[1]), PNG)
+
+    def test_text_only_model_rejects_image_with_hint(self):
+        """开了 LLM_VISION，模型却不支持图片：给出中文提示，历史仍然合法，还能接着聊。"""
+        FakeDeepSeek.mode = "text_only"
+        (self.ws / "dot.png").write_bytes(PNG)
+        llm = ChatLLM("sk-test", self.base_url, "deepseek-flash", max_retries=0)
+        events = []
+        agent = Agent(llm, self.ws, vision=True, on_event=lambda k, d: events.append((k, d)))
+        self.assertEqual(agent.run("看看 dot.png"), "")
+
+        errors = [d["text"] for k, d in events if k == "error"]
+        self.assertIn("LLM_VISION", errors[0])
+        self.assertEqual(agent.messages[-1]["role"], "tool")      # 发不出去的图片消息被撤掉了
+
+        agent.vision = False                                     # 用户按提示关掉看图，再问一次
+        self.assertEqual(agent.run("那换个说法"), "图里是一个点。")
 
 
 if __name__ == "__main__":

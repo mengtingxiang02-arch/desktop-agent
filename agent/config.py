@@ -22,6 +22,7 @@ class Config:
     workspace: Path          # Agent 只能在这个目录里读写文件、跑命令
     max_steps: int = 30      # 一次提问里最多循环多少步，防止模型陷入死循环
     thinking: bool | None = None  # DeepSeek 思考模式：True 开 / False 关 / None 用服务商默认
+    vision: bool = False     # 模型能不能看图：开了以后，read_file 读到的图片会发给模型
 
 
 def _parse_bool(value: str | None) -> bool | None:
@@ -43,4 +44,5 @@ def load_config(workspace: str | os.PathLike | None = None) -> Config:
         workspace=ws,
         max_steps=int(os.getenv("AGENT_MAX_STEPS", "30")),
         thinking=_parse_bool(os.getenv("LLM_THINKING")),
+        vision=bool(_parse_bool(os.getenv("LLM_VISION"))),
     )

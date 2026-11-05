@@ -32,11 +32,12 @@ class AgentBridge(QObject):
         if llm is None:
             llm = ChatLLM(cfg.api_key, cfg.base_url, cfg.model, thinking=cfg.thinking)  # Key 不对会在这里抛 LLMError
         self.model_name = cfg.model
+        self.vision = cfg.vision
         self.workspace = cfg.workspace
         # 工具 = 内置的四个 + MCP 服务器提供的
         tools = list(BUILTIN_TOOLS) + list(extra_tools or [])
         self.agent = Agent(llm, cfg.workspace, tools=tools, max_steps=cfg.max_steps,
-                           on_event=self._on_event, confirm=self._confirm)
+                           on_event=self._on_event, confirm=self._confirm, vision=cfg.vision)
         self.always_allowed: set[str] = set()
         self._answer = False
         self._answered = threading.Event()

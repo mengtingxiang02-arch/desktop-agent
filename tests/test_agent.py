@@ -1,4 +1,5 @@
 """Agent 循环测试：用一个"假模型"按剧本回复，验证循环逻辑。不需要 API Key。"""
+import base64
 import json
 import tempfile
 import threading
@@ -7,6 +8,9 @@ from pathlib import Path
 
 from agent.core import CANCELLED_RESULT, Agent
 from agent.llm import LLMCancelled, LLMError
+
+# 一张 1×1 像素的 PNG 图片
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
 
 
 def tool_call(call_id, name, **args):
@@ -193,6 +197,42 @@ class AgentLoopTests(unittest.TestCase):
         agent.run("hello")
         agent.reset()
         self.assertEqual(len(agent.messages), 1)
+
+    # ---- 读图片
+    def read_picture_script(self):
+        """模型在同一轮里读一张图片和一个文本文件，然后回答。"""
+        (self.ws / "dot.png").write_bytes(PNG)
+        (self.ws / "note.txt").write_text("hello", encoding="utf-8")
+        return [
+            assistant(None, [tool_call("c1", "read_file", path="dot.png"),
+                             tool_call("c2", "read_file", path="note.txt")]),
+            assistant("图里是一个点。"),
+        ]
+
+    def test_image_sent_as_user_message_when_vision_on(self):
+        agent = self.make_agent(self.read_picture_script(), vision=True)
+        self.assertEqual(agent.run("看看 dot.png"), "图里是一个点。")
+
+        # 两条 tool 消息紧跟在 tool_calls 后面，图片放在它们之后的一条 user 消息里
+        self.assertEqual([m["role"] for m in agent.messages],
+                         ["system", "user", "assistant", "tool", "tool", "user", "assistant"])
+        self.assertIn("已读取图片 dot.png", agent.messages[3]["content"])
+        image_msg = agent.messages[5]
+        self.assertEqual([part["type"] for part in image_msg["content"]], ["text", "image_url"])
+        self.assertTrue(image_msg["content"][1]["image_url"]["url"].startswith("data:image/png;base64,"))
+        # 模型第二次被调用时，确实看到了这张图片
+        self.assertEqual(self.llm.seen[1][-1]["content"][1]["type"], "image_url")
+        # 界面收到的工具结果是文字，不是图片对象
+        results = [d["result"] for k, d in self.events if k == "tool_result"]
+        self.assertTrue(all(isinstance(r, str) for r in results))
+
+    def test_image_not_sent_when_vision_off(self):
+        agent = self.make_agent(self.read_picture_script())          # 默认 vision=False
+        agent.run("看看 dot.png")
+        self.assertEqual([m["role"] for m in agent.messages],
+                         ["system", "user", "assistant", "tool", "tool", "assistant"])
+        self.assertIn("LLM_VISION", agent.messages[3]["content"])   # 告诉模型它看不到，别瞎猜
+        self.assertFalse(any(isinstance(m.get("content"), list) for m in agent.messages))
 
 
 if __name__ == "__main__":

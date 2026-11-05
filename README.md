@@ -12,7 +12,7 @@
 |---|---|
 | 真正的桌面应用 | PySide6（Qt）原生窗口，不依赖浏览器或 localhost |
 | 三栏界面 | 左：文件树　中：文件内容 / 改动对比　右：对话 |
-| 四个核心工具 | `read_file`、`write_file`、`edit_file`、`bash`（`agent/tools.py`） |
+| 四个核心工具 | `read_file`、`write_file`、`edit_file`、`bash`（`agent/tools.py`）；`read_file` 也能读图片，以多模态内容块（`image_url`）交给模型 |
 | 接入 MCP | 按 `mcp.json` 启动 MCP 服务器，把它的工具并入 Agent 的工具列表（`agent/mcp_client.py`），默认接入官方 fetch 服务器 |
 | 错误处理 | 工具出错时把错误交回模型自行修正；API Key、网络、服务器繁忙（503）等错误显示中文说明；MCP 服务器启动失败不影响其它功能 |
 | 中断 | "停止"按钮可以打断模型输出、正在运行的命令（连同它启动的子进程）和 MCP 调用 |
@@ -50,6 +50,7 @@ desktop-agent/
 - **界面不卡**：Agent 在后台线程运行，通过 Qt 信号把事件送回主线程更新界面；输入框上方实时显示"思考中 / 正在执行 / 等你确认"和已用秒数。
 - **执行前确认**：写文件、改文件、执行命令、调用 MCP 工具之前都会弹窗确认；改文件时，中栏会先显示改动对比。
 - **文件工具限制在工作目录内**：`read_file`、`write_file`、`edit_file` 拒绝访问工作目录以外的路径。
+- **读图片**：`read_file` 按文件开头的字节识别 PNG/JPEG/GIF/WebP，读成 base64。接口规定 `tool` 消息只能放文字，所以工具结果里放说明，图片放进紧跟在后面的一条 `user` 消息，格式是 `[{type: text}, {type: image_url}]`。没开 `LLM_VISION` 时只告诉模型"你看不到这张图"，避免它瞎猜。
 - **DeepSeek 思考模式**：开启思考时，带工具的请求必须把上一轮的 `reasoning_content` 原样传回，否则接口返回 400。程序会保留并回传它，测试中用假服务器模拟了这条规则。
 
 ## 三步启动
@@ -101,6 +102,7 @@ MCP 的 fetch（读网页）功能需要电脑上装有 [uv](https://docs.astral
 | `LLM_BASE_URL` | OpenAI 兼容接口地址 | `https://api.deepseek.com` |
 | `LLM_MODEL` | 模型名 | `deepseek-flash` |
 | `LLM_THINKING` | 思考模式，`on` 或 `off` | 服务商默认 |
+| `LLM_VISION` | 设为 `on` 时，`read_file` 读到的图片会发给模型（模型要支持图片输入，如 `deepseek-v4-flash-vision-exp`） | `off` |
 | `AGENT_MAX_STEPS` | 一次任务最多执行几步 | `30` |
 
 要换成其它提供 OpenAI 兼容接口的模型（如通义千问、Kimi、智谱），只需修改 `LLM_BASE_URL` 和 `LLM_MODEL`。

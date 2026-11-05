@@ -28,7 +28,7 @@ from typing import Callable, Protocol
 
 from .llm import LLMCancelled
 from .guard import RepeatGuard
-from .tools import BUILTIN_TOOLS, Tool, ToolCancelled, ToolContext, ToolError
+from .tools import BUILTIN_TOOLS, ImageContent, Tool, ToolCancelled, ToolContext, ToolError
 
 # 事件回调：on_event(事件类型, 数据)
 #   assistant_delta 流式输出的一个小片段 {"text"}   （边生成边来，界面靠它做打字机效果）
@@ -51,6 +51,10 @@ class LLMClient(Protocol):
 
 
 CANCELLED_RESULT = "（用户中断了操作，这个工具没有执行）"
+IMAGE_ATTACHED = "图片本身在下一条消息里。"
+IMAGE_NOT_SUPPORTED = ("注意：当前没有开启图片输入，你看不到这张图片的内容，不要猜测图片里有什么。"
+                       "如果需要看图，请告诉用户：在 .env 里设置 LLM_VISION=on，"
+                       "并把 LLM_MODEL 换成支持图片输入的模型。")
 
 
 def build_system_prompt(workspace: Path) -> str:
@@ -81,11 +85,13 @@ class Agent:
                  max_steps: int = 30,
                  on_event: EventHandler | None = None,
                  confirm: ConfirmHandler | None = None,
-                 system_prompt: str | None = None):
+                 system_prompt: str | None = None,
+                 vision: bool = False):
         self.llm = llm
         self.workspace = Path(workspace).resolve()
         self.tools: dict[str, Tool] = {t.name: t for t in (tools if tools is not None else BUILTIN_TOOLS)}
         self.max_steps = max_steps
+        self.vision = vision      # 模型能不能看图。能看，read_file 读到的图片才会真的发给它
         self.on_event = on_event or (lambda kind, data: None)
         self.confirm = confirm or (lambda name, args: True)
         self.repeat_guard = RepeatGuard(limit=3)   # 防死循环
@@ -145,6 +151,7 @@ class Agent:
                 return text
 
             # ---- Action → Observation
+            images: list[ImageContent] = []
             for i, call in enumerate(calls):
                 if self.cancel_event.is_set():
                     # 关键细节：API 规定每个 tool_call 后面都必须有对应的 tool 消息，
@@ -153,7 +160,16 @@ class Agent:
                         self._append_tool_result(rest["id"], CANCELLED_RESULT)
                     return self._cancelled()
                 result = self._execute(call)
+                if isinstance(result, ImageContent):
+                    # tool 消息只能放文字：这里先放说明，图片本身等这一轮的工具都执行完再附上
+                    if self.vision:
+                        images.append(result)
+                    result = f"{result.text}。{IMAGE_ATTACHED if self.vision else IMAGE_NOT_SUPPORTED}"
                 self._append_tool_result(call["id"], result)
+
+            if images:
+                # 必须放在所有 tool 消息之后：tool_calls 后面要紧跟着它们各自的 tool 消息，中间不能插别的
+                self.messages.append(self._image_message(images))
 
         self.on_event("error", {"text": f"已经连续执行了 {self.max_steps} 步还没完成，为防止死循环先停下。可以让我继续。"})
         return ""
@@ -187,12 +203,23 @@ class Agent:
     def _append_tool_result(self, call_id: str, content: str) -> None:
         self.messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
 
+    @staticmethod
+    def _image_message(images: list[ImageContent]) -> dict:
+        """把图片包成一条 user 消息。content 是一个列表（多模态内容块）：先一段文字，再一张张图片。"""
+        names = "；".join(img.text for img in images)
+        content: list[dict] = [{"type": "text", "text": f"下面是刚才 read_file 读到的图片（按顺序）：{names}"}]
+        content += [{"type": "image_url", "image_url": {"url": img.data_url()}} for img in images]
+        return {"role": "user", "content": content}
+
     def _cancelled(self) -> str:
         self.on_event("cancelled", {})
         return ""
 
-    def _execute(self, call: dict) -> str:
-        """执行一个工具调用，无论发生什么都返回一段文字（绝不抛异常）。"""
+    def _execute(self, call: dict) -> str | ImageContent:
+        """执行一个工具调用，无论发生什么都返回结果（绝不抛异常）。
+
+        一般返回一段文字；read_file 读到图片时返回 ImageContent，由 run() 决定怎么交给模型。
+        """
         call_id = call["id"]
         name = call["function"]["name"]
         raw_args = call["function"].get("arguments") or "{}"
@@ -246,5 +273,6 @@ class Agent:
         except Exception as e:  # 兜底：任何意外都不能让整个 Agent 崩掉
             result = f"错误：工具内部异常 {type(e).__name__}: {e}"
 
-        self.on_event("tool_result", {"id": call_id, "name": name, "result": result, "ok": ok})
+        shown = result.text if isinstance(result, ImageContent) else result   # 界面上只显示文字说明
+        self.on_event("tool_result", {"id": call_id, "name": name, "result": shown, "ok": ok})
         return result

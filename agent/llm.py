@@ -104,6 +104,9 @@ class ChatLLM:
         if isinstance(e, openai.APIStatusError):
             if e.status_code == 402:
                 return LLMError("账户余额不足（402），请到模型服务商的控制台充值")
+            if e.status_code == 400 and "image" in str(e.message).lower():
+                return LLMError("这个模型不接受图片输入（400）：请把 .env 里的 LLM_VISION 改成 off，"
+                                f"或者把 LLM_MODEL 换成支持图片的模型。原始信息：{e.message}")
             return LLMError(f"模型接口返回错误 {e.status_code}：{e.message}")
         return None
 

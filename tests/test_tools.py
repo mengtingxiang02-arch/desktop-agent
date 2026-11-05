@@ -1,4 +1,5 @@
 """四个工具的单元测试。不需要 API Key。运行：python -m unittest -v"""
+import base64
 import tempfile
 import threading
 import time
@@ -6,8 +7,11 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from agent.tools import (ToolCancelled, ToolContext, ToolError, bash, edit_file,
+from agent.tools import (ImageContent, ToolCancelled, ToolContext, ToolError, bash, edit_file,
                          read_file, write_file)
+
+# 一张 1×1 像素的 PNG 图片
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
 
 
 class ToolTests(unittest.TestCase):
@@ -47,6 +51,28 @@ class ToolTests(unittest.TestCase):
         (self.ws / "x.bin").write_bytes(b"\xff\xfe\x00\x81")
         with self.assertRaisesRegex(ToolError, "UTF-8"):
             read_file(self.ctx, "x.bin")
+
+    # ---- 读图片
+    def test_read_image_returns_image_content(self):
+        (self.ws / "dot.png").write_bytes(PNG)
+        out = read_file(self.ctx, "dot.png")
+        self.assertIsInstance(out, ImageContent)
+        self.assertEqual(out.media_type, "image/png")
+        self.assertEqual(base64.b64decode(out.data), PNG)          # 编码再解码，图片一个字节都没变
+        self.assertTrue(out.data_url().startswith("data:image/png;base64,iVBOR"))
+        self.assertIn("dot.png", out.text)
+
+    def test_image_recognized_by_content_not_extension(self):
+        (self.ws / "photo.dat").write_bytes(b"\xff\xd8\xff\xe0" + bytes(20))   # JPEG 的开头，扩展名却是 .dat
+        self.assertEqual(read_file(self.ctx, "photo.dat").media_type, "image/jpeg")
+        (self.ws / "fake.png").write_text("其实是文字", encoding="utf-8")       # 扩展名是 .png，内容是文字
+        self.assertIn("其实是文字", read_file(self.ctx, "fake.png"))
+
+    def test_too_large_image_rejected(self):
+        (self.ws / "big.png").write_bytes(PNG)
+        with mock.patch("agent.tools.MAX_IMAGE_BYTES", 10):
+            with self.assertRaisesRegex(ToolError, "上限"):
+                read_file(self.ctx, "big.png")
 
     def test_path_outside_workspace_rejected(self):
         for bad in ["../evil.txt", "/etc/passwd", "a/../../evil.txt"]:

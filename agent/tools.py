@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import signal
@@ -25,6 +26,7 @@ from typing import Callable
 
 MAX_OUTPUT_CHARS = 12_000   # 工具返回给模型的文字上限，太长会浪费 token 甚至撑爆上下文
 DEFAULT_READ_LIMIT = 2000   # read_file 默认最多读多少行
+MAX_IMAGE_BYTES = 5 * 1024 * 1024   # 图片最大 5 MB：图片会留在对话历史里，每一轮都要重新发给模型
 
 
 class ToolError(Exception):
@@ -42,11 +44,27 @@ class ToolContext:
 
 
 @dataclass
+class ImageContent:
+    """read_file 读到图片时的返回值，也就是一个"多模态内容块"：文字说明 + 图片本身。
+
+    模型接口规定 role="tool" 的消息里只能放文字，图片只能放在 role="user" 的消息里。
+    所以工具只负责把图片读出来、编成 base64；怎么交给模型，由 Agent 循环决定（见 core.py）。
+    """
+    text: str           # 给模型和界面看的说明，比如"已读取图片 a.png（PNG，12 KB）"
+    media_type: str     # image/png、image/jpeg、image/gif、image/webp
+    data: str           # base64 编码后的图片内容
+
+    def data_url(self) -> str:
+        """接口要的格式：data:image/png;base64,iVBORw0..."""
+        return f"data:{self.media_type};base64,{self.data}"
+
+
+@dataclass
 class Tool:
     name: str
     description: str
     parameters: dict                 # JSON Schema
-    func: Callable[..., str]         # func(ctx, **args) -> str
+    func: Callable[..., str | ImageContent]   # func(ctx, **args)，一般返回文字，read_file 读到图片时返回 ImageContent
     needs_confirm: bool = False      # 执行前要不要问用户（会改文件或跑命令的都要问）
 
     def schema(self) -> dict:
@@ -94,17 +112,57 @@ def _rel(ctx: ToolContext, p: Path) -> str:
 
 # ---------------------------------------------------------------- 1. read_file
 
-def read_file(ctx: ToolContext, path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT) -> str:
+def sniff_image(head: bytes) -> str | None:
+    """看文件开头的几个字节（"魔数"）判断是不是图片，返回 media_type，不是图片返回 None。
+
+    比看扩展名可靠：扩展名可以随便改，文件开头的字节改不了。
+    """
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _human_size(n: int) -> str:
+    return f"{n / 1024 / 1024:.1f} MB" if n >= 1024 * 1024 else f"{max(1, round(n / 1024))} KB"
+
+
+def _read_image(ctx: ToolContext, p: Path, media_type: str) -> ImageContent:
+    size = p.stat().st_size
+    if size > MAX_IMAGE_BYTES:
+        raise ToolError(
+            f"图片 {_rel(ctx, p)} 有 {_human_size(size)}，超过 {_human_size(MAX_IMAGE_BYTES)} 的上限。"
+            "可以先用 bash 把图片缩小（macOS 上可以用 sips -Z 1024 图片路径 --out 新路径）再读"
+        )
+    data = base64.b64encode(p.read_bytes()).decode("ascii")
+    kind = media_type.split("/")[1].upper()
+    return ImageContent(text=f"已读取图片 {_rel(ctx, p)}（{kind}，{_human_size(size)}）",
+                        media_type=media_type, data=data)
+
+
+def read_file(ctx: ToolContext, path: str, offset: int = 1,
+              limit: int = DEFAULT_READ_LIMIT) -> str | ImageContent:
     p = resolve_path(ctx, path)
     if not p.exists():
         raise ToolError(f"文件不存在：{path}")
     if p.is_dir():
         entries = sorted(e.name + ("/" if e.is_dir() else "") for e in p.iterdir())
         raise ToolError(f"{path} 是目录，不是文件。目录内容：{', '.join(entries[:100]) or '（空）'}")
+
+    with p.open("rb") as f:
+        media_type = sniff_image(f.read(12))
+    if media_type:                                   # 图片：不按行读，整张交给模型看
+        return _read_image(ctx, p, media_type)
+
     try:
         text = p.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        raise ToolError(f"{path} 不是 UTF-8 文本文件（可能是图片或二进制文件），无法读取")
+        raise ToolError(f"{path} 不是 UTF-8 文本文件，也不是能识别的图片（PNG/JPEG/GIF/WebP），无法读取")
 
     lines = text.splitlines()
     offset = max(1, int(offset))
@@ -273,8 +331,9 @@ BUILTIN_TOOLS: list[Tool] = [
     Tool(
         name="read_file",
         description=(
-            "读取工作目录中的文本文件，返回带行号的内容（格式：行号<TAB>内容）。"
-            "修改文件之前必须先读。大文件可以用 offset/limit 分段读。"
+            "读取工作目录中的文件。文本文件返回带行号的内容（格式：行号<TAB>内容），"
+            "修改文件之前必须先读，大文件可以用 offset/limit 分段读。"
+            "图片（PNG/JPEG/GIF/WebP）会把图片本身交给你看。"
         ),
         parameters={
             "type": "object",
