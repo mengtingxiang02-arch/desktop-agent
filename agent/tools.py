@@ -13,10 +13,12 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -120,15 +122,45 @@ def read_file(ctx: ToolContext, path: str, offset: int = 1, limit: int = DEFAULT
 
 # ---------------------------------------------------------------- 2. write_file
 
+def _count_lines(text: str) -> int:
+    """数行数："a\nb\n" 和 "a\nb" 都算 2 行，空文件算 0 行。"""
+    return len(text.splitlines())
+
+
 def write_file(ctx: ToolContext, path: str, content: str) -> str:
+    """原子写：先写到同一个文件夹里的临时文件，写完再一步改名，替换掉原文件。
+
+    如果直接往原文件里写，写到一半程序崩溃或被停止，原文件就只剩半截。
+    os.replace 改名是一步完成的：任何时候看到的，要么是完整的旧文件，要么是完整的新文件。
+    """
     p = resolve_path(ctx, path)
     if p.is_dir():
         raise ToolError(f"{path} 是一个目录，不能当文件写")
-    existed = p.exists()
+
+    existed = p.is_file()
+    old_lines = None
+    if existed:
+        try:
+            old_lines = _count_lines(p.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, OSError):
+            pass  # 原文件不是文本（比如图片），就不报原来的行数
+
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
-    n = content.count("\n") + (0 if content.endswith("\n") or not content else 1)
-    return f"已{'覆盖' if existed else '创建'}文件 {_rel(ctx, p)}（{n} 行）"
+    tmp = p.with_name(f".{p.name}.{uuid.uuid4().hex[:8]}.tmp")   # 和目标在同一个文件夹，改名才是一步完成的
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        if existed:
+            shutil.copymode(p, tmp)   # 保留原文件的权限，比如"可执行"
+        os.replace(tmp, p)
+    except BaseException:
+        tmp.unlink(missing_ok=True)   # 失败了也不留下临时文件
+        raise
+
+    new_lines = _count_lines(content)
+    if not existed:
+        return f"已创建文件 {_rel(ctx, p)}（{new_lines} 行）"
+    before = f"{old_lines} 行" if old_lines is not None else "非文本内容"
+    return f"已覆盖文件 {_rel(ctx, p)}：原来 {before}，现在 {new_lines} 行"
 
 
 # ---------------------------------------------------------------- 3. edit_file

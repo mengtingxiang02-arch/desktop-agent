@@ -3,6 +3,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from agent.tools import (ToolCancelled, ToolContext, ToolError, bash, edit_file,
@@ -107,6 +108,21 @@ class ToolTests(unittest.TestCase):
         out = bash(self.ctx, "python3 -c \"print('x' * 50000)\"")
         self.assertIn("中间省略", out)
         self.assertLess(len(out), 13000)
+
+    def test_write_overwrite_reports_line_change(self):
+        write_file(self.ctx, "f.txt", "1\n2\n3\n")
+        msg = write_file(self.ctx, "f.txt", "only\n")
+        self.assertIn("原来 3 行，现在 1 行", msg)
+        self.assertEqual((self.ws / "f.txt").read_text(encoding="utf-8"), "only\n")
+
+    def test_write_failure_keeps_old_file(self):
+        """模拟写到一半出错：原文件必须完好，也不能留下临时文件。"""
+        write_file(self.ctx, "f.txt", "old\n")
+        with mock.patch("agent.tools.os.replace", side_effect=OSError("磁盘满了")):
+            with self.assertRaises(OSError):
+                write_file(self.ctx, "f.txt", "new\n")
+        self.assertEqual((self.ws / "f.txt").read_text(encoding="utf-8"), "old\n")
+        self.assertEqual([x.name for x in self.ws.iterdir()], ["f.txt"])
 
 
 if __name__ == "__main__":
