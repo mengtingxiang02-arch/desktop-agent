@@ -313,7 +313,8 @@ def bash(ctx: ToolContext, command: str, timeout: int = 60) -> str:
             if time.monotonic() > deadline:
                 _kill_process_tree(proc)
                 proc.communicate()
-                raise ToolError(f"命令运行超过 {timeout} 秒，已强制结束。长时间运行的程序（如服务器）不要在这里前台启动")
+                raise ToolError(f"命令运行超过 {timeout} 秒，已强制结束。可能是程序陷入了死循环，或者在等待输入；"
+                                "长时间运行的程序（如服务器）不要在这里前台启动")
 
     parts = [f"exit code: {proc.returncode}"]
     if out.strip():
