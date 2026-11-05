@@ -18,6 +18,8 @@
 | 中断 | "停止"按钮可以打断模型输出、正在运行的命令（连同它启动的子进程）和 MCP 调用 |
 | 打包 | macOS：PyInstaller → `.app` → `.dmg`；Windows：GitHub Actions 在云端打包 `.exe` |
 
+设计取舍、遇到的问题等写在 [report.md](report.md)。
+
 ## 工作原理
 
 Agent 的核心是 ReAct 循环（`agent/core.py`）：
@@ -42,8 +44,10 @@ desktop-agent/
 ├── gui.py              桌面版入口
 ├── cli.py              命令行版入口
 ├── mcp.json            MCP 服务器配置
-├── scripts/record_trace.py  录一次真实运行，生成 docs/trace.md
-└── tests/              56 个自动化测试
+├── scripts/            录制真实运行（record_trace.py）、一条命令打包 Mac 安装包（package_mac.sh）
+├── docs/               运行记录 trace.md、打包说明 build.md、截图
+├── report.md           项目报告
+└── tests/              57 个自动化测试
 ```
 
 几个设计要点：
@@ -110,12 +114,16 @@ MCP 的 fetch（读网页）功能需要电脑上装有 [uv](https://docs.astral
 
 ### 打包方法
 
-- **macOS**：`pyinstaller --noconfirm "Desktop Agent.spec"` 生成 `.app`，再用 `hdiutil` 做成 `.dmg`。
+- **macOS**：`bash scripts/package_mac.sh 1.1.0`，一条命令完成测试、生成 `.app`、做成 `.dmg`。
 - **Windows**：在 GitHub 仓库的 Actions 页面手动运行 **Build Windows exe**（配置文件：`.github/workflows/build-windows.yml`）。
+
+详细步骤和遇到的问题见 [docs/build.md](docs/build.md)。
 
 ## 测试情况
 
-**自动化测试**：共 41 个（`python -m unittest`），不需要 API Key。用假模型测试循环逻辑，用本地假服务器测试流式接收和错误处理，用本地 MCP 服务器测试 MCP 客户端。
+**自动化测试**：共 57 个（`python -m unittest`），不需要 API Key。用假模型测试循环逻辑，用本地假服务器测试流式接收和错误处理，用本地 MCP 服务器测试 MCP 客户端。
+
+**真实运行记录**：[docs/trace.md](docs/trace.md)。用 DeepSeek 修一个有 4 处 bug 的小项目，过程中测试卡死、`bash` 超时报错，Agent 读代码判断出是死循环，修好全部 bug，测试通过。
 
 **手动测试**：
 
