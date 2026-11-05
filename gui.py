@@ -51,12 +51,16 @@ def prepare_app_home() -> bool:
     load_dotenv(ENV_FILE)
     if os.getenv("LLM_API_KEY", "").strip():
         return True
-    key, ok = QInputDialog.getText(None, "第一次使用",
-                                   f"请输入模型的 API Key\n（会保存在 {ENV_FILE}，以后不用再输）：",
-                                   QLineEdit.EchoMode.Password)
-    key = key.strip()
-    if not ok or not key:
-        return False
+    while True:
+        key, ok = QInputDialog.getText(None, "第一次使用",
+                                       f"请输入模型的 API Key\n（会保存在 {ENV_FILE}，以后不用再输）：",
+                                       QLineEdit.EchoMode.Password)
+        key = key.strip()
+        if not ok or not key:
+            return False
+        if key.isascii():           # 输错了就别存进 .env，否则以后每次打开都报错
+            break
+        QMessageBox.warning(None, "Key 不对", "API Key 里不应该有中文或全角字符，请重新粘贴。")
     set_key(str(ENV_FILE), "LLM_API_KEY", key, quote_mode="never")
     os.environ["LLM_API_KEY"] = key
     return True
@@ -129,7 +133,7 @@ class MainWindow(QMainWindow):
         try:
             bridge = AgentBridge(folder, llm=self._llm, extra_tools=self.mcp.tools if self.mcp else None)
         except LLMError as e:
-            QMessageBox.critical(self, "无法启动 Agent", str(e))
+            QMessageBox.critical(self, "无法启动 Agent", f"{e}\n\n配置文件在：{ENV_FILE}")
             return False
         if self.bridge is not None:
             self.bridge.deleteLater()

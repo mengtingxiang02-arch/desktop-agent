@@ -70,6 +70,11 @@ class ChatLLM:
                  thinking: bool | None = None, timeout: float = 120, max_retries: int = 2):
         if not api_key:
             raise LLMError("没有配置 API Key：请在项目根目录的 .env 文件里填写 LLM_API_KEY")
+        if not api_key.isascii():
+            # Key 要放进 HTTP 请求头，请求头只能是英文字符。不提前检查的话，
+            # 要等到发请求时才报一句看不懂的 "'ascii' codec can't encode characters"
+            raise LLMError("API Key 里有中文或全角字符，不像是真正的 Key：请检查 .env 里的 LLM_API_KEY，"
+                           "填从模型服务商控制台复制来的原始 Key，不要带中文说明")
         self.model = model
         self.thinking = thinking
         # max_retries：遇到网络抖动、429 限流、5xx 时 SDK 会自动重试（带退避）

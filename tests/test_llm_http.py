@@ -244,6 +244,13 @@ class HttpEndToEndTests(unittest.TestCase):
         with self.assertRaisesRegex(LLMError, "没有配置 API Key"):
             ChatLLM("", self.base_url, "deepseek-flash")
 
+    def test_non_ascii_key_is_caught_early(self):
+        """Key 还是中文占位符时，创建客户端就报中文提示，不等到发请求才报 ascii 编码错误。"""
+        with self.assertRaisesRegex(LLMError, "中文或全角"):
+            ChatLLM("在这里填你的Key", self.base_url, "deepseek-flash")
+        with self.assertRaisesRegex(LLMError, "中文或全角"):
+            ChatLLM("sk-abc１２３", self.base_url, "deepseek-flash")       # 全角数字
+
     # ---- 读图片
     def test_image_reaches_server_as_image_url_block(self):
         """图片经过真正的 OpenAI SDK 发出去，服务器收到的是标准的 image_url 内容块。"""
