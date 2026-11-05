@@ -398,14 +398,3 @@ BUILTIN_TOOLS: list[Tool] = [
         needs_confirm=True,
     ),
 ]
-def test_bash_safety_guard(self):
-        """测试：危险的 bash 命令会被安全闸拦截"""
-        from agent.tools import bash
-        from agent.exceptions import ToolError  # 确保导入了你的报错类
-        
-        # 试图运行一个带有 sudo 的危险命令
-        with self.assertRaises(ToolError) as context:
-            bash(command="sudo rm -rf /")
-            
-        # 验证报错信息里确实包含了我们写的提示
-        self.assertIn("安全拦截", str(context.exception))

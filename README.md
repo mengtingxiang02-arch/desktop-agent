@@ -42,7 +42,7 @@ desktop-agent/
 ├── gui.py              桌面版入口
 ├── cli.py              命令行版入口
 ├── mcp.json            MCP 服务器配置
-└── tests/              41 个自动化测试
+└── tests/              56 个自动化测试
 ```
 
 几个设计要点：

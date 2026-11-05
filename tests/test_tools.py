@@ -130,6 +130,11 @@ class ToolTests(unittest.TestCase):
         time.sleep(0.3)
         self.assertFalse((self.ws / "leaked.txt").exists())
 
+    def test_bash_blocks_dangerous_command(self):
+        """危险命令（sudo、rm -rf / 等）被安全检查拦下，根本不会执行"""
+        with self.assertRaisesRegex(ToolError, "安全拦截"):
+            bash(self.ctx, "sudo rm -rf /")
+
     def test_bash_truncates_huge_output(self):
         out = bash(self.ctx, "python3 -c \"print('x' * 50000)\"")
         self.assertIn("中间省略", out)
