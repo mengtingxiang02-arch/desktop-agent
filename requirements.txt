@@ -1,8 +1,6 @@
-# 第 1 阶段：Agent 核心 + 命令行
-openai>=3.40,<4
-python-dotenv>=1.0
-
-# 后面几个阶段会依次加入（现在先不用装）：
-PySide6>=6.11
-mcp>=2.3,<3
-pyinstaller>=6.20
+# 版本钉死：换一台电脑、过几个月再装，装到的都是同一套依赖
+openai==3.42.1
+python-dotenv==1.2.4
+PySide6==6.12.0
+mcp==2.3.0
+pyinstaller==6.22.3
